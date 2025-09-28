@@ -3,18 +3,18 @@
     "school-emails": {
       "created_at": "2025-09-17T19:45:59.351214",
       "description": "Stoney Brooke Emails - Important",
-      "last_used": "2025-09-21T21:25:01.414927",
+      "last_used": "2025-09-27T21:01:35.524751",
       "name": "school-emails",
       "query": "from:email@renweb.com is:important newer_than:5d",
-      "usage_count": 9
+      "usage_count": 12
     },
     "today-important": {
       "created_at": "2025-09-17T19:44:52.385304",
       "description": "Important emails from today",
-      "last_used": null,
+      "last_used": "2025-09-22T18:27:58.570711",
       "name": "today-important",
-      "query": "is:important newer_than:14d",
-      "usage_count": 0
+      "query": "is:important is:unread newer_than:1d",
+      "usage_count": 2
     }
   },
   "version": "1.0"

@@ -64,6 +64,8 @@ Examples:
   %(prog)s --no-transcript                    # Disable transcript generation
   %(prog)s --transcript-only 2025-09-19       # Generate transcript from existing YAML
   %(prog)s --transcript-date 2025-09-19       # Use specific date for transcript
+  %(prog)s --generate-audio                   # Generate audio for today's transcript
+  %(prog)s --audio-date 2025-09-19            # Generate audio for specific date
         """
     )
     
@@ -172,6 +174,20 @@ Examples:
         type=str,
         metavar='DATE',
         help='Specify date for transcript generation (YYYY-MM-DD, defaults to today)'
+    )
+    
+    # Audio generation arguments
+    parser.add_argument(
+        '--generate-audio',
+        action='store_true',
+        help='Generate audio for today\'s transcript'
+    )
+    
+    parser.add_argument(
+        '--audio-date',
+        type=str,
+        metavar='DATE',
+        help='Generate audio for specific date (YYYY-MM-DD)'
     )
     
     return parser.parse_args()
@@ -1142,6 +1158,323 @@ def generate_transcript_for_workflow(config, yaml_file_path: str, transcript_dat
         return False
 
 
+def handle_audio_generation(date: str) -> int:
+    """Handle the --generate-audio and --audio-date commands to generate audio from transcript.
+    
+    Args:
+        date: Date string in YYYY-MM-DD format
+        
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Validate date format
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+            logger.info(f"Processing audio generation for date: {date}")
+        except ValueError:
+            print(f"Error: Invalid date format '{date}'. Expected YYYY-MM-DD format.")
+            logger.error(f"Invalid date format provided: {date}")
+            return 1
+        
+        # Load configuration with error handling
+        try:
+            logger.info("Loading configuration for audio generation...")
+            config = load_config()
+            logger.info("Configuration loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load configuration: {e}")
+            print(f"Error: Could not load configuration - {e}")
+            return 1
+        
+        # Check if audio generation is enabled
+        if not config.enable_audio_generation:
+            print("Audio generation is disabled in configuration.")
+            print("Set ENABLE_AUDIO_GENERATION=true in your .env file to enable it.")
+            logger.info("Audio generation is disabled in configuration")
+            return 1
+        
+        # Ensure audio directory exists with enhanced error handling
+        try:
+            from config.settings import ensure_audio_directory
+            if not ensure_audio_directory(config):
+                logger.error("Failed to create audio directory")
+                print(f"Error: Could not create audio directory: {config.audio_output_directory}")
+                return 1
+        except Exception as e:
+            logger.error(f"Error ensuring audio directory exists: {e}")
+            print(f"Error: Could not access audio directory - {e}")
+            return 1
+        
+        # Initialize audio generator with enhanced error handling
+        audio_generator = None
+        
+        try:
+            logger.info("Initializing audio generator...")
+            from audio.tts_generator import AudioGenerator
+            audio_generator = AudioGenerator(config)
+            logger.info("Audio generator initialized successfully")
+        except Exception as e:
+            user_message = create_user_friendly_message(e, "initializing audio generator")
+            logger.error(f"Failed to initialize audio generator: {user_message}")
+            print(f"Error: Could not initialize audio generator - {user_message}")
+            return 1
+        
+        # Find the transcript file for the specified date
+        transcript_file_path = os.path.join(config.transcript_output_directory, f"{date}.txt")
+        
+        if not os.path.exists(transcript_file_path):
+            print(f"Error: Transcript file not found for date {date}: {transcript_file_path}")
+            print(f"Please ensure the transcript file exists before generating audio.")
+            print(f"You can create it by running: python main.py --transcript-only {date}")
+            logger.error(f"Transcript file not found: {transcript_file_path}")
+            return 1
+        
+        logger.info(f"Found transcript file: {transcript_file_path}")
+        
+        # Read transcript content
+        transcript_content = None
+        try:
+            logger.info(f"Reading transcript content from {transcript_file_path}...")
+            with open(transcript_file_path, 'r', encoding='utf-8') as f:
+                transcript_content = f.read()
+            
+            if not transcript_content or not transcript_content.strip():
+                logger.error("Transcript file is empty or contains only whitespace")
+                print("Error: Transcript file is empty. This may indicate an issue with the transcript file.")
+                return 1
+            
+            logger.info(f"Read transcript content ({len(transcript_content)} characters)")
+            
+        except Exception as e:
+            logger.error(f"Failed to read transcript file: {e}")
+            print(f"Error: Could not read transcript file - {e}")
+            return 1
+        
+        # Generate audio file path
+        audio_file_path = audio_generator.get_audio_path(date)
+        
+        # Check if audio file already exists
+        if audio_generator.audio_exists(date):
+            logger.info(f"Audio file already exists: {audio_file_path}")
+            print(f"Audio file already exists: {audio_file_path}")
+            print("Overwriting existing audio file...")
+        
+        # Generate audio with comprehensive error handling
+        try:
+            logger.info(f"Generating audio for {date}...")
+            print(f"Generating audio from transcript ({len(transcript_content)} characters)...")
+            
+            generated_audio_path = audio_generator.generate_audio(transcript_content, audio_file_path)
+            
+            # Verify the file was created successfully
+            if not os.path.exists(generated_audio_path):
+                logger.error(f"Audio file was not created: {generated_audio_path}")
+                print(f"Error: Audio file was not created successfully")
+                return 1
+            
+            logger.info(f"Audio generated successfully: {generated_audio_path}")
+            
+        except (RetryableError, NonRetryableError) as e:
+            user_message = create_user_friendly_message(e, "generating audio")
+            logger.error(f"Audio generation failed: {user_message}")
+            print(f"Error: {user_message}")
+            return 1
+        except Exception as e:
+            logger.error(f"Unexpected error during audio generation: {e}")
+            print(f"Error: Unexpected error during audio generation - {e}")
+            return 1
+        
+        # Display success message
+        print("=" * 60)
+        print("AUDIO GENERATION COMPLETE")
+        print("=" * 60)
+        print(f"Date: {date}")
+        print(f"Source transcript: {transcript_file_path}")
+        print(f"Audio file: {generated_audio_path}")
+        
+        # Show audio stats with error handling
+        try:
+            audio_size = audio_generator.get_audio_file_size(date)
+            if audio_size:
+                print(f"Audio file size: {audio_size} bytes")
+                
+            # Show a preview of the transcript content
+            if len(transcript_content) > 100:
+                preview = transcript_content[:100] + "..."
+                print(f"Transcript preview: {preview}")
+            else:
+                print(f"Transcript content: {transcript_content}")
+                
+        except Exception as e:
+            logger.debug(f"Could not get audio stats: {e}")
+            # Don't fail the operation for stats errors
+        
+        logger.info("Audio generation completed successfully")
+        return 0
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in audio generation: {e}")
+        print(f"Error: Audio generation failed due to unexpected error - {e}")
+        return 1
+
+
+def generate_audio_for_workflow(config, transcript_file_path: str, audio_date: Optional[str] = None, verbose: bool = False) -> bool:
+    """Generate audio as part of the main email processing workflow.
+    
+    Args:
+        config: Configuration object
+        transcript_file_path: Path to the transcript file that was just created
+        audio_date: Optional date override for audio generation
+        verbose: Whether verbose logging is enabled
+        
+    Returns:
+        bool: True if audio generation succeeded, False otherwise
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Validate inputs
+        if not transcript_file_path:
+            logger.error("Transcript file path is required for audio generation")
+            return False
+        
+        if not os.path.exists(transcript_file_path):
+            logger.error(f"Transcript file not found: {transcript_file_path}")
+            return False
+        
+        # Determine the date for audio generation
+        if audio_date:
+            try:
+                datetime.strptime(audio_date, "%Y-%m-%d")
+                date = audio_date
+                if verbose:
+                    logger.info(f"Using specified audio date: {date}")
+            except ValueError:
+                logger.error(f"Invalid audio date format: {audio_date}. Expected YYYY-MM-DD")
+                return False
+        else:
+            # Extract date from transcript file path (e.g., transcripts/2025-09-19.txt)
+            transcript_filename = os.path.basename(transcript_file_path)
+            date = transcript_filename.replace('.txt', '')
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+                if verbose:
+                    logger.info(f"Extracted date from filename: {date}")
+            except ValueError:
+                logger.error(f"Could not extract valid date from transcript filename: {transcript_filename}")
+                # Try fallback to today's date
+                date = datetime.now().strftime("%Y-%m-%d")
+                logger.warning(f"Using today's date as fallback: {date}")
+        
+        if verbose:
+            logger.info(f"Starting audio generation for date: {date}")
+        
+        # Ensure audio directory exists with enhanced error handling
+        try:
+            from config.settings import ensure_audio_directory
+            if not ensure_audio_directory(config):
+                logger.error("Failed to create audio directory")
+                return False
+        except Exception as e:
+            logger.error(f"Error ensuring audio directory exists: {e}")
+            return False
+        
+        # Initialize audio generator with enhanced error handling
+        audio_generator = None
+        
+        try:
+            if verbose:
+                logger.info("Initializing audio generator...")
+            from audio.tts_generator import AudioGenerator
+            audio_generator = AudioGenerator(config)
+            if verbose:
+                logger.info("Audio generator initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize audio generator: {create_user_friendly_message(e, 'initializing audio generator')}")
+            return False
+        
+        # Read transcript content
+        transcript_content = None
+        try:
+            if verbose:
+                logger.info(f"Reading transcript content from {transcript_file_path}...")
+            with open(transcript_file_path, 'r', encoding='utf-8') as f:
+                transcript_content = f.read()
+            
+            if not transcript_content or not transcript_content.strip():
+                logger.error("Transcript file is empty or contains only whitespace")
+                return False
+            
+            if verbose:
+                logger.info(f"Read transcript content ({len(transcript_content)} characters)")
+            
+        except Exception as e:
+            logger.error(f"Failed to read transcript file: {e}")
+            return False
+        
+        # Generate audio file path
+        audio_file_path = audio_generator.get_audio_path(date)
+        
+        # Generate audio with comprehensive error handling
+        try:
+            if verbose:
+                logger.info(f"Generating audio content from {transcript_file_path}...")
+            generated_audio_path = audio_generator.generate_audio(transcript_content, audio_file_path)
+            
+            # Verify the file was created successfully
+            if not os.path.exists(generated_audio_path):
+                logger.error(f"Audio file was not created: {generated_audio_path}")
+                return False
+            
+            if verbose:
+                logger.info(f"Audio generated successfully: {generated_audio_path}")
+            
+        except (RetryableError, NonRetryableError) as e:
+            user_message = create_user_friendly_message(e, 'generating audio')
+            logger.error(f"Audio generation failed: {user_message}")
+            if verbose:
+                logger.debug(f"Original error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during audio generation: {e}")
+            if verbose:
+                logger.debug(f"Full error details: {e}", exc_info=True)
+            return False
+        
+        # Log success with file size information
+        try:
+            file_size = os.path.getsize(generated_audio_path)
+            if verbose:
+                logger.info(f"Audio written to: {generated_audio_path} ({file_size} bytes)")
+            else:
+                logger.info(f"Audio generated: {generated_audio_path}")
+        except OSError:
+            # File exists but can't get size - still a success
+            logger.info(f"Audio generated: {generated_audio_path}")
+        
+        # Log audio statistics if verbose
+        if verbose:
+            try:
+                audio_size = audio_generator.get_audio_file_size(date)
+                if audio_size:
+                    logger.info(f"Audio file size: {audio_size} bytes")
+            except Exception as e:
+                logger.debug(f"Could not get audio size: {e}")
+        
+        if verbose:
+            logger.info("Audio generation workflow completed successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in audio workflow: {e}")
+        if verbose:
+            logger.debug(f"Full error details: {e}", exc_info=True)
+        return False
+
+
 def process_emails() -> int:
     """
     Main email processing workflow.
@@ -1171,6 +1504,14 @@ def process_emails() -> int:
         
         if args.transcript_only:
             return handle_transcript_only(args.transcript_only)
+        
+        # Handle audio generation commands
+        if args.generate_audio:
+            today = datetime.now().strftime("%Y-%m-%d")
+            return handle_audio_generation(today)
+        
+        if args.audio_date:
+            return handle_audio_generation(args.audio_date)
         
         # Load configuration
         logger.info("Loading configuration...")
@@ -1246,12 +1587,17 @@ def process_emails() -> int:
                     logger.info(f"Created empty summary file: {file_path}")
                     
                     # Generate transcript for empty email day if enabled
+                    transcript_file_path = None
                     if not args.no_transcript and config.enable_transcript_generation:
                         try:
                             transcript_success = generate_transcript_for_workflow(
                                 config, file_path, args.transcript_date, args.verbose
                             )
-                            if not transcript_success:
+                            if transcript_success:
+                                # Get transcript file path for audio generation
+                                date = args.transcript_date if args.transcript_date else datetime.now().strftime("%Y-%m-%d")
+                                transcript_file_path = os.path.join(config.transcript_output_directory, f"{date}.txt")
+                            else:
                                 logger.warning("Transcript generation failed for empty email day, but main workflow completed successfully")
                         except Exception as e:
                             logger.warning(f"Transcript generation for empty email day encountered an error: {e}")
@@ -1260,6 +1606,22 @@ def process_emails() -> int:
                         logger.info("Transcript generation skipped for empty email day due to --no-transcript flag")
                     elif not config.enable_transcript_generation:
                         logger.info("Transcript generation disabled in configuration for empty email day")
+                    
+                    # Generate audio for empty email day if enabled and transcript was created
+                    if transcript_file_path and config.enable_audio_generation:
+                        try:
+                            audio_success = generate_audio_for_workflow(
+                                config, transcript_file_path, args.audio_date, args.verbose
+                            )
+                            if not audio_success:
+                                logger.warning("Audio generation failed for empty email day, but main workflow completed successfully")
+                        except Exception as e:
+                            logger.warning(f"Audio generation for empty email day encountered an error: {e}")
+                            logger.info("Main email processing workflow completed successfully despite audio error")
+                    elif not transcript_file_path and config.enable_audio_generation:
+                        logger.info("Audio generation skipped for empty email day because transcript generation was not successful")
+                    elif not config.enable_audio_generation:
+                        logger.info("Audio generation disabled in configuration for empty email day")
                     
                     return 0
                 except NonRetryableError as e:
@@ -1279,7 +1641,6 @@ def process_emails() -> int:
         for i, raw_email in enumerate(raw_emails):
             try:
                 # The fetcher already extracted the data, we just need to convert it to EmailData
-                from datetime import datetime
                 from email.utils import parsedate_to_datetime
                 
                 # Parse the date
@@ -1323,12 +1684,17 @@ def process_emails() -> int:
             logger.info(f"Created empty summary file: {file_path}")
             
             # Generate transcript for empty email day if enabled
+            transcript_file_path = None
             if not args.no_transcript and config.enable_transcript_generation:
                 try:
                     transcript_success = generate_transcript_for_workflow(
                         config, file_path, args.transcript_date, args.verbose
                     )
-                    if not transcript_success:
+                    if transcript_success:
+                        # Get transcript file path for audio generation
+                        date = args.transcript_date if args.transcript_date else datetime.now().strftime("%Y-%m-%d")
+                        transcript_file_path = os.path.join(config.transcript_output_directory, f"{date}.txt")
+                    else:
                         logger.warning("Transcript generation failed for empty email day, but main workflow completed successfully")
                 except Exception as e:
                     logger.warning(f"Transcript generation for empty email day encountered an error: {e}")
@@ -1337,6 +1703,22 @@ def process_emails() -> int:
                 logger.info("Transcript generation skipped for empty email day due to --no-transcript flag")
             elif not config.enable_transcript_generation:
                 logger.info("Transcript generation disabled in configuration for empty email day")
+            
+            # Generate audio for empty email day if enabled and transcript was created
+            if transcript_file_path and config.enable_audio_generation:
+                try:
+                    audio_success = generate_audio_for_workflow(
+                        config, transcript_file_path, args.audio_date, args.verbose
+                    )
+                    if not audio_success:
+                        logger.warning("Audio generation failed for empty email day, but main workflow completed successfully")
+                except Exception as e:
+                    logger.warning(f"Audio generation for empty email day encountered an error: {e}")
+                    logger.info("Main email processing workflow completed successfully despite audio error")
+            elif not transcript_file_path and config.enable_audio_generation:
+                logger.info("Audio generation skipped for empty email day because transcript generation was not successful")
+            elif not config.enable_audio_generation:
+                logger.info("Audio generation disabled in configuration for empty email day")
             
             return 0
         
@@ -1393,12 +1775,17 @@ def process_emails() -> int:
             logger.info(f"Total emails in file: {stats.get('email_count', 0)}")
         
         # Generate transcript if enabled and not disabled by CLI flag
+        transcript_file_path = None
         if not args.no_transcript and config.enable_transcript_generation:
             try:
                 transcript_success = generate_transcript_for_workflow(
                     config, file_path, args.transcript_date, args.verbose
                 )
-                if not transcript_success:
+                if transcript_success:
+                    # Get transcript file path for audio generation
+                    date = args.transcript_date if args.transcript_date else datetime.now().strftime("%Y-%m-%d")
+                    transcript_file_path = os.path.join(config.transcript_output_directory, f"{date}.txt")
+                else:
                     logger.warning("Transcript generation failed, but main workflow completed successfully")
             except Exception as e:
                 logger.warning(f"Transcript generation encountered an error: {e}")
@@ -1407,6 +1794,22 @@ def process_emails() -> int:
             logger.info("Transcript generation skipped due to --no-transcript flag")
         elif not config.enable_transcript_generation:
             logger.info("Transcript generation disabled in configuration")
+        
+        # Generate audio if enabled and transcript was created
+        if transcript_file_path and config.enable_audio_generation:
+            try:
+                audio_success = generate_audio_for_workflow(
+                    config, transcript_file_path, args.audio_date, args.verbose
+                )
+                if not audio_success:
+                    logger.warning("Audio generation failed, but main workflow completed successfully")
+            except Exception as e:
+                logger.warning(f"Audio generation encountered an error: {e}")
+                logger.info("Main email processing workflow completed successfully despite audio error")
+        elif not transcript_file_path and config.enable_audio_generation:
+            logger.info("Audio generation skipped because transcript generation was not successful")
+        elif not config.enable_audio_generation:
+            logger.info("Audio generation disabled in configuration")
         
         logger.info("Gmail Email Summarizer completed successfully")
         return 0

@@ -51,6 +51,12 @@ class Config:
     transcript_max_tokens: int = 1000
     transcript_temperature: float = 0.7
     
+    # Audio Generation Settings
+    enable_audio_generation: bool = False
+    audio_output_directory: str = "audio_summaries"
+    tts_voice: str = "alloy"  # OpenAI voice options: alloy, echo, fable, onyx, nova, shimmer
+    tts_speed: float = 1.0    # Speed range: 0.25 to 4.0
+    
     def __post_init__(self):
         """Load environment variables and validate configuration after initialization."""
         self._load_from_environment()
@@ -75,6 +81,16 @@ class Config:
         # Load transcript configuration settings from environment
         self.transcript_output_directory = os.getenv("TRANSCRIPT_OUTPUT_DIRECTORY", self.transcript_output_directory)
         
+        # Load audio configuration settings from environment
+        self.audio_output_directory = os.getenv("AUDIO_OUTPUT_DIRECTORY", self.audio_output_directory)
+        self.tts_voice = os.getenv("TTS_VOICE", self.tts_voice)
+        
+        # Load TTS speed with validation
+        try:
+            self.tts_speed = float(os.getenv("TTS_SPEED", str(self.tts_speed)))
+        except ValueError as e:
+            logging.warning(f"Invalid TTS_SPEED environment variable: {e}")
+        
         # Load numeric settings with validation
         try:
             self.max_emails_per_run = int(os.getenv("MAX_EMAILS_PER_RUN", str(self.max_emails_per_run)))
@@ -95,6 +111,10 @@ class Config:
             enable_transcript_generation_env = os.getenv("ENABLE_TRANSCRIPT_GENERATION")
             if enable_transcript_generation_env is not None:
                 self.enable_transcript_generation = enable_transcript_generation_env.lower() in ("true", "1", "yes", "on")
+            
+            enable_audio_generation_env = os.getenv("ENABLE_AUDIO_GENERATION")
+            if enable_audio_generation_env is not None:
+                self.enable_audio_generation = enable_audio_generation_env.lower() in ("true", "1", "yes", "on")
         except Exception as e:
             logging.warning(f"Invalid boolean environment variable: {e}")
     
@@ -161,6 +181,22 @@ class Config:
         # Validate that enable_transcript_generation is boolean
         if not isinstance(self.enable_transcript_generation, bool):
             raise ValueError("enable_transcript_generation must be a boolean value")
+        
+        # Validate audio generation settings
+        if not isinstance(self.enable_audio_generation, bool):
+            raise ValueError("enable_audio_generation must be a boolean value")
+        
+        if not self.audio_output_directory:
+            raise ValueError("audio_output_directory cannot be empty")
+        
+        # Validate TTS voice option
+        valid_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+        if self.tts_voice not in valid_voices:
+            raise ValueError(f"Invalid TTS voice '{self.tts_voice}'. Valid options: {', '.join(valid_voices)}")
+        
+        # Validate TTS speed range
+        if not 0.25 <= self.tts_speed <= 4.0:
+            raise ValueError(f"TTS speed must be between 0.25 and 4.0, got {self.tts_speed}")
     
     def get_api_key(self) -> str:
         """Get the appropriate API key based on the configured provider."""
@@ -253,4 +289,22 @@ def ensure_transcript_directory(config: Config) -> bool:
         return True
     except OSError as e:
         logging.error(f"Failed to create transcript output directory {config.transcript_output_directory}: {e}")
+        return False
+
+
+def ensure_audio_directory(config: Config) -> bool:
+    """Ensure the audio output directory exists, creating it if necessary.
+    
+    Args:
+        config: Configuration instance containing audio output directory path
+        
+    Returns:
+        bool: True if directory exists or was created successfully, False otherwise
+    """
+    try:
+        os.makedirs(config.audio_output_directory, exist_ok=True)
+        logging.info(f"Audio output directory ready: {config.audio_output_directory}")
+        return True
+    except OSError as e:
+        logging.error(f"Failed to create audio output directory {config.audio_output_directory}: {e}")
         return False

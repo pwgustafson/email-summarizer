@@ -51,6 +51,7 @@ client_secret_*.json
 # Output files (CONTAINS PRIVATE EMAIL DATA!)
 email_summaries/
 transcripts/
+audio_summaries/
 *.yaml
 *.yml
 

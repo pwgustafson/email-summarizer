@@ -111,7 +111,7 @@ gmail-email-summarizer/
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
 2. Click "Select a project" → "New Project"
 3. Enter a project name (e.g., "Gmail Email Summarizer")
-4. Click "Create"
+4. Click "Create"li
 
 ### Step 2: Enable Gmail API
 
